@@ -106,11 +106,11 @@ architecture/
 
 ## Related Repositories
 
-- [infra](https://github.com/cloud-fullstack/spring-client-chatbot/infra/): Infrastructure as Code (Terraform) for VPS setup and K3s cluster
-- [k3s](https://github.com/cloud-fullstack/spring-client-chatbot/k3s/): Kubernetes cluster configuration and Helm charts
-- [backend_spring_chatbot](https://github.com/cloud-fullstack/spring-client-chatbot/backend_spring_chatbot/): Spring Boot backend services
-- [chatbot-docker](https://github.com/cloud-fullstack/spring-client-chatbot/chatbot-docker/): Docker configurations and deployment scripts
-- [spring-client-chatbot](https://github.com/cloud-fullstack/spring-client-chatbot/spring-client-chatbot/): Spring Boot client application
+- [infra](https://github.com/cloud-fullstack/infra/): Infrastructure as Code (Terraform) for VPS setup and K3s cluster
+- [k3s](https://github.com/cloud-fullstack/k3s/): Kubernetes cluster configuration and Helm charts
+- [backend_spring_chatbot](https://github.com/cloud-fullstack/spring-client-chatbot/): Spring Boot backend services
+- [chatbot-docker](https://github.com/cloud-fullstack/chatbot-docker/): Docker configurations and deployment scripts
+- [spring-client-chatbot](https://github.com/cloud-fullstack/spring-client-chatbot/): Spring Boot client application
 
 Each repository contains its own detailed documentation and setup instructions.
 
