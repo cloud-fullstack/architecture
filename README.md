@@ -117,8 +117,8 @@ Each repository contains its own detailed documentation and setup instructions.
 ## Security Architecture
 
 ### Secrets Management
-- Centralized secrets in `/etc/omero/secrets`
-- Configurations in `/etc/omero/config`
+- Centralized secrets in `/etc/chatbot/secrets`
+- Configurations in `/etc/chatbot/config`
 - All secret files have 600 permissions
 - Regular encrypted backups
 - Audit logging enabled
@@ -150,7 +150,7 @@ Each repository contains its own detailed documentation and setup instructions.
 
 ### Infrastructure Setup
 1. Run `setup_k3s.sh` from setup_scripts directory for K3s cluster setup
-2. Run `setup_backend_spring_omero.sh` from setup_scripts directory for Spring backend setup
+2. Run `setup_backend_spring_chatbot.sh` from setup_scripts directory for Spring backend setup
 3. Run `setup_engine_model.sh` from setup_scripts directory for LLM engine setup
 4. Run `setup_secrets.sh` from setup_scripts directory for secrets configuration
 5. Use `get_secrets.py` from setup_scripts directory for secret retrieval
