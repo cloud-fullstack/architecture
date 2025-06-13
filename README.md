@@ -1,7 +1,7 @@
 # Chatbot Infrastructure Architecture
 
 ## Author
-Aldo
+Aldo Grandoni
 
 ## Overview
 This directory contains the complete infrastructure and deployment architecture for the Chatbot platform, including both web and backend components.
@@ -10,49 +10,49 @@ This directory contains the complete infrastructure and deployment architecture 
 
 ```mermaid
 graph TD
-    A[Admin Portal (Render.com)] --> B{Voice Input}
-    B --> C[Web Speech API]
-    B --> D[Kafka Producer]
-    
-    C --> E[Browser TTS]
-    D --> F[Kafka Service]
-    
-    F --> G[Kafka Topics]
-    G --> H[Vosk STT]
-    G --> I[Piper TTS]
-    G --> J[LLM Processing]
-    
-    H --> K[Text Response]
-    I --> K
-    J --> K
-    
-    K --> L[Kafka Consumer]
-    L --> M[Admin Portal]
-    L --> N[TelemacoChatBot]
-    
-    subgraph Backend (K3s on Netcup)
-        F --> G --> H --> I --> J
-        L
+    subgraph Frontend
+        A[Web Portal] --> B{User Interaction}
+        B --> C[Voice Input]
+        B --> D[Text Input]
     end
     
-    subgraph Monitoring
-        O[Prometheus]
-        P[Grafana]
-        F --> O
-        G --> O
-        H --> O
-        I --> O
-        J --> O
-        O --> P
+    subgraph Processing Pipeline
+        direction TB
+        E[Speech Recognition] --> F[Text Processing]
+        F --> G[LLM Analysis]
+        G --> H[Response Generation]
+        H --> I[Speech Synthesis]
     end
     
-    subgraph Database
-        Q[PostgreSQL]
-        R[Redis]
-        J --> Q
-        Q --> J
-        R --> J
+    subgraph Backend Services
+        direction TB
+        J[API Gateway] --> K[Auth Service]
+        K --> L[Notification Service]
+        K --> M[Subscription Service]
+        K --> N[LLM Service]
     end
+    
+    subgraph Data Storage
+        O[PostgreSQL]
+        P[Redis Cache]
+        Q[Message Queue]
+    end
+    
+    subgraph Monitoring & Analytics
+        R[Prometheus]
+        S[Grafana]
+        T[Logging]
+    end
+    
+    %% Connections
+    C --> E
+    D --> F
+    H --> J
+    N --> O
+    N --> P
+    N --> Q
+    R --> S
+    T --> S
 ```
 
 ## Directory Structure
