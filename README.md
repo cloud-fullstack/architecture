@@ -106,7 +106,7 @@ architecture/
 
 ## Related Repositories
 
-- [infra](https://github.com/cloud-fullstack/infra/): Infrastructure as Code (Terraform) for VPS setup and K3s cluster
+- [infra](https://github.com/cloud-fullstack/infrastructure/): Infrastructure as Code (Terraform) for VPS setup and K3s cluster
 - [k3s](https://github.com/cloud-fullstack/k3s/): Kubernetes cluster configuration and Helm charts
 - [backend_spring_chatbot](https://github.com/cloud-fullstack/backend_spring_chatbot/): Spring Boot backend services
 - [chatbot-docker](https://github.com/cloud-fullstack/chatbot-docker/): Docker configurations and deployment scripts
