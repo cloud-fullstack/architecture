@@ -101,7 +101,7 @@ graph TB
 
 Public entry layer of the platform. A **Node.js/Fastify** service that exposes:
 
-- **Embeddable JavaScript widget** (`widget.js`, `telemaco-widget.js`): a lightweight script (~50KB) to drop into any client website. It contains no business logic — only UI rendering (chat bubble, voice button), environment detection (production/demo/staging/local), and communication with the gateway.
+- **Embeddable JavaScript widget** (`widget.js`, `chatbot-widget.js`): a lightweight script (~50KB) to drop into any client website. It contains no business logic — only UI rendering (chat bubble, voice button), environment detection (production/demo/staging/local), and communication with the gateway.
 - **REST proxy**: routes `/api/chat`, `/api/tts`, `/api/tts/features`, `/api/v1/widget/verify` to `backend_llm`, injecting the service JWT.
 - **WebSocket proxy** (`/ws/chat`): validates `widget_key` and `Origin` before completing the WebSocket upgrade, applies per-IP rate limiting, then forwards frames bidirectionally to the `backend_llm` WebSocket.
 - **Security**: whitelist of valid `widget_key`s, whitelist of allowed CORS origins, in-memory per-IP rate limiting.
