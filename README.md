@@ -11,62 +11,20 @@ The platform is composed of seven independent repositories, each responsible for
 
 ## System Architecture
 
+**High-level platform flow:**
+
 ```mermaid
 graph TB
     W[Embeddable Widget<br/>widget.js<br/><i>Client Website</i>]
-
     W --> GW
 
-    subgraph GATEWAY [" Gateway Layer — chat-assist-connect-hub "]
-        direction TB
-        GW[Fastify Gateway]
-        GW --> API["/api/chat, /api/tts<br/>(REST proxy)"]
-        GW --> WS["/ws/chat<br/>(WebSocket proxy)"]
-    end
+    GW[Fastify Gateway<br/><i>chat-assist-connect-hub</i><br/>REST + WebSocket proxy]
+    GW --> ENGINE
 
-    GW --> HF
-    GW --> STTR
-    GW --> TTSR
+    ENGINE[Language Engine<br/><i>backend_llm</i><br/>sector handlers + LLM/STT/TTS<br/>see detail diagram below]
+    ENGINE --> SPC
 
-    subgraph ENGINE [" Language Engine — backend_llm "]
-        direction TB
-
-        HF{HandlerFactory<br/>routes by business_type}
-        HF --> H1[Medical / Doctor]
-        HF --> H2[Laboratory]
-        HF --> H3[BnB]
-        HF --> H4[Lawyer<br/>RAG + LLM]
-        HF --> H5[E-commerce<br/>+ memory]
-        HF --> H6[Restaurant]
-
-        H1 & H2 & H3 & H4 & H5 & H6 --> MPB[MultilingualPromptBuilder<br/>IT / EN / ES / FR / DE]
-
-        MPB --> LLMR
-
-        LLMR[LLM Router<br/><i>pluggable via providers.properties</i>]
-        LLMR --> LLMP1[Together AI<br/>primary — e.g. Gemma]
-        LLMR --> LLMP2[Qwen self-hosted<br/>fallback — swap in Llama/GPT-compatible]
-
-        STTR[STT Router<br/><i>Vosk models pluggable per language</i>]
-        STTR --> STTP1[Voxtral Mini via Together<br/>primary]
-        STTR --> STTP2[Vosk self-hosted<br/>fallback]
-
-        TTSR[TTS Router]
-        TTSR --> TTSP1[Kokoro self-hosted<br/>primary]
-        TTSR --> TTSP2[Piper self-hosted<br/>fallback: also DE]
-
-        REDIS[(Redis<br/>conversation state, rate limit)]
-        LLMR --> REDIS
-        STTR --> REDIS
-    end
-
-    LLMR --> SPC
-
-    subgraph PYCLIENT [" Python Client — spring-client-chatbot "]
-        direction TB
-        SPC[SpringClient<br/>HTTP/JWT wrapper]
-    end
-
+    SPC[SpringClient<br/><i>spring-client-chatbot</i><br/>HTTP/JWT wrapper]
     SPC --> AUTH
     SPC --> SUB
 
@@ -85,19 +43,51 @@ graph TB
         SUB --> PG
     end
 
-    LLMP2 -.->|training data| ED
+    ENGINE -.->|training data| ED
 
-    subgraph DATASET [" Dataset Generation — easy-dataset "]
-        direction TB
-        ED[Next.js App]
-        ED --> DOC[PDF / MD / DOCX Documents]
-        ED --> HF[Hugging Face / LLaMA Factory export]
-    end
+    ED[easy-dataset<br/>Next.js App<br/>fine-tuning dataset generation]
 
-    subgraph MARKETING [" Marketing Frontend — moonwald-s-sonic-oasis "]
-        direction TB
-        FE[React SSR<br/>multilingual public site]
-    end
+    MKT[moonwald-s-sonic-oasis<br/>React SSR marketing site<br/><i>independent, not in the request path</i>]
+```
+
+**Language Engine detail (`backend_llm`):**
+
+```mermaid
+graph TB
+    HF{HandlerFactory<br/>routes by business_type}
+
+    HF --> H1[Medical / Doctor]
+    HF --> H2[Laboratory]
+    HF --> H3[BnB]
+    HF --> H4[Lawyer<br/>RAG + LLM]
+    HF --> H5[E-commerce<br/>+ memory]
+    HF --> H6[Restaurant]
+
+    H1 --> MPB
+    H2 --> MPB
+    H3 --> MPB
+    H4 --> MPB
+    H5 --> MPB
+    H6 --> MPB
+
+    MPB[MultilingualPromptBuilder<br/>IT / EN / ES / FR / DE]
+    MPB --> LLMR
+
+    LLMR[LLM Router<br/><i>pluggable via providers.properties</i>]
+    LLMR --> LLMP1[Together AI<br/>primary — e.g. Gemma]
+    LLMR --> LLMP2[Qwen self-hosted<br/>fallback — swap in Llama / GPT-compatible]
+    LLMR --> REDIS
+
+    STTR[STT Router<br/><i>Vosk models pluggable per language</i>]
+    STTR --> STTP1[Voxtral Mini via Together<br/>primary]
+    STTR --> STTP2[Vosk self-hosted<br/>fallback]
+    STTR --> REDIS
+
+    TTSR[TTS Router]
+    TTSR --> TTSP1[Kokoro self-hosted<br/>primary]
+    TTSR --> TTSP2[Piper self-hosted<br/>fallback: also DE]
+
+    REDIS[(Redis<br/>conversation state, rate limit)]
 ```
 
 ## Component Descriptions
