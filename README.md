@@ -1,7 +1,7 @@
 # Chatbot Infrastructure Architecture
 
 ## Author
-Aldo Grandoni
+Moonwald
 
 ## Overview
 
@@ -12,64 +12,92 @@ The platform is composed of seven independent repositories, each responsible for
 ## System Architecture
 
 ```mermaid
-graph TD
-    subgraph "Client Website"
-        W[Embeddable Widget - widget.js]
-    end
+graph TB
+    W[Embeddable Widget<br/>widget.js<br/><i>Client Website</i>]
 
-    subgraph "Gateway Layer (chat-assist-connect-hub)"
+    W --> GW
+
+    subgraph GATEWAY [" Gateway Layer — chat-assist-connect-hub "]
+        direction TB
         GW[Fastify Gateway]
-        GW --> |REST proxy| API[/api/chat, /api/tts/]
-        GW --> |WebSocket proxy| WS[/ws/chat/]
+        GW --> API["/api/chat, /api/tts<br/>(REST proxy)"]
+        GW --> WS["/ws/chat<br/>(WebSocket proxy)"]
     end
 
-    subgraph "Language Engine (backend_llm)"
-        LLMR[LLM Router] --> LLMP1[Together AI - primary]
-        LLMR --> LLMP2[Qwen self-hosted - fallback]
-        STTR[STT Router] --> STTP1[Voxtral Mini via Together - primary]
-        STTR --> STTP2[Vosk self-hosted - fallback]
-        TTSR[TTS Router] --> TTSP1[Kokoro self-hosted - primary]
-        TTSR --> TTSP2[Piper self-hosted - fallback IT/EN/ES/FR/DE]
-        REDIS[(Redis - conversation state, rate limiting)]
+    GW --> HF
+    GW --> STTR
+    GW --> TTSR
+
+    subgraph ENGINE [" Language Engine — backend_llm "]
+        direction TB
+
+        HF{HandlerFactory<br/>routes by business_type}
+        HF --> H1[Medical / Doctor]
+        HF --> H2[Laboratory]
+        HF --> H3[BnB]
+        HF --> H4[Lawyer<br/>RAG + LLM]
+        HF --> H5[E-commerce<br/>+ memory]
+        HF --> H6[Restaurant]
+
+        H1 & H2 & H3 & H4 & H5 & H6 --> MPB[MultilingualPromptBuilder<br/>IT / EN / ES / FR / DE]
+
+        MPB --> LLMR
+
+        LLMR[LLM Router<br/><i>pluggable via providers.properties</i>]
+        LLMR --> LLMP1[Together AI<br/>primary — e.g. Gemma]
+        LLMR --> LLMP2[Qwen self-hosted<br/>fallback — swap in Llama/GPT-compatible]
+
+        STTR[STT Router<br/><i>Vosk models pluggable per language</i>]
+        STTR --> STTP1[Voxtral Mini via Together<br/>primary]
+        STTR --> STTP2[Vosk self-hosted<br/>fallback]
+
+        TTSR[TTS Router]
+        TTSR --> TTSP1[Kokoro self-hosted<br/>primary]
+        TTSR --> TTSP2[Piper self-hosted<br/>fallback: also DE]
+
+        REDIS[(Redis<br/>conversation state, rate limit)]
+        LLMR --> REDIS
+        STTR --> REDIS
     end
 
-    subgraph "Business Services (backend_spring_kafka)"
+    LLMR --> SPC
+
+    subgraph PYCLIENT [" Python Client — spring-client-chatbot "]
+        direction TB
+        SPC[SpringClient<br/>HTTP/JWT wrapper]
+    end
+
+    SPC --> AUTH
+    SPC --> SUB
+
+    subgraph BUSINESS [" Business Services — backend_spring_kafka "]
+        direction TB
         AUTH[Auth Service]
         SUB[Subscription Service]
         NOTIF[Notification Service]
-        KAFKA[[Kafka - user.auth.events, plan.updates, auth_errors]]
+        KAFKA[[Kafka<br/>user.auth.events, plan.updates, auth_errors]]
         PG[(PostgreSQL)]
+
+        AUTH --> KAFKA
+        SUB --> KAFKA
+        KAFKA --> NOTIF
+        AUTH --> PG
+        SUB --> PG
     end
 
-    subgraph "Python Client (spring-client-chatbot)"
-        SPC[SpringClient - HTTP/JWT wrapper]
-    end
+    LLMP2 -.->|training data| ED
 
-    subgraph "Dataset Generation (easy-dataset)"
+    subgraph DATASET [" Dataset Generation — easy-dataset "]
+        direction TB
         ED[Next.js App]
-        ED --> |question/answer extraction| DOC[PDF/MD/DOCX Documents]
-        ED --> |export| HF[Hugging Face / LLaMA Factory]
+        ED --> DOC[PDF / MD / DOCX Documents]
+        ED --> HF[Hugging Face / LLaMA Factory export]
     end
 
-    subgraph "Marketing Frontend (moonwald-s-sonic-oasis)"
-        FE[React SSR - multilingual public site]
+    subgraph MARKETING [" Marketing Frontend — moonwald-s-sonic-oasis "]
+        direction TB
+        FE[React SSR<br/>multilingual public site]
     end
-
-    W --> GW
-    GW --> LLMR
-    GW --> STTR
-    GW --> TTSR
-    LLMR --> REDIS
-    STTR --> REDIS
-    SPC --> AUTH
-    SPC --> SUB
-    AUTH --> KAFKA
-    SUB --> KAFKA
-    KAFKA --> NOTIF
-    AUTH --> PG
-    SUB --> PG
-    backend_llm -.-> |direct call for subscription/plan| SPC
-    ED -.-> |fine-tuning dataset| LLMP2
 ```
 
 ## Component Descriptions
@@ -99,6 +127,32 @@ This component fully decouples the client website from the LLM engine: the widge
 Provider configuration (fallback chains, models, URLs, supported languages) is externalized in a `providers.properties` file, loaded at runtime by a `ProviderConfigManager` that allows switching primary/fallback providers without modifying the code.
 
 A co-located **Redis** instance maintains conversation state and rate limiting.
+
+#### Multi-Sector Business Handlers
+
+`backend_llm/chatbot-services` is designed to serve chat clients across **multiple business sectors** through a single deployment. A `HandlerFactory` (`handlers/handler_factory.py`) routes each incoming request to a sector-specific handler based on a `business_type` parameter sent by the widget:
+
+- **Medical / Doctor** (`medical_handler.py`) — appointment scheduling, doctor consultations.
+- **Laboratory** (`laboratory_handler.py`) — lab analysis booking.
+- **BnB / Vacation Rentals** (`bnb_handler.py`) — room availability, booking, amenities, pricing.
+- **Lawyer / Legal** (`lawyer_handler.py`) — legal Q&A powered by RAG over uploaded documents (contracts, guides), with LLM fallback when no matching document is found.
+- **E-commerce** (`ecommerce_handler.py`) — product inquiries, order status, with session memory (`EnhancedBaseHandler`) that persists customer preferences across conversations.
+- **Restaurant / Food Delivery** (`restaurant_handler.py`) — menu browsing, ordering, reservations, delivery info.
+- **RAG / Document Q&A** (`rag_handler.py`) — generic document-based question answering, reused by other sector handlers (e.g. the Lawyer handler).
+
+Each handler builds its system prompt via `MultilingualPromptBuilder`, which auto-detects the user's language (or uses the one passed by the widget) and generates natural responses in **Italian, English, Spanish, French, and German** without needing sector-specific translation files — the LLM itself produces the localized response from a language-tagged system prompt.
+
+New sectors can be added by implementing a new handler class and registering it in `HandlerFactory._HANDLERS`, without touching the gateway, the widget, or the routing infrastructure.
+
+#### Pluggable LLM / STT / TTS Model Switching
+
+The engine is built so that the underlying AI models can be swapped **without code changes**, via the `providers.properties` file read by `ProviderConfigManager` (`shared/config/provider_config.py`):
+
+- **LLM**: currently routes to **Together AI** (e.g. `google/gemma-4-31B-it`) as primary, with a self-hosted **Qwen** model as a documented (in-progress) fallback slot. Because the provider chain is config-driven, adding another OpenAI-compatible model (e.g. **Llama**, **GPT-family models** via an OpenAI-compatible endpoint, or any other Together.ai-hosted model) only requires adding a new `ProviderConfig` entry — no changes to `LLMService` are needed.
+- **STT**: **Voxtral Mini 3B** (via Together.ai) as primary, **Vosk** (self-hosted, offline) as fallback. Vosk loads per-language acoustic models from a mounted volume (`vosk-models-pvc`); **adding support for a new spoken language** is done by dropping the corresponding Vosk model into that volume and registering the language code — no application redeploy is required for the model itself.
+- **TTS**: **Kokoro** (self-hosted, IT/EN/ES/FR) as primary, **Piper** (self-hosted, adds DE) as fallback. Additional languages/voices are added the same way — by registering new voice IDs in `VOICE_MAP` and, if needed, a new provider entry.
+
+This provider-abstraction layer is what allows the same deployment to serve a medical clinic in Italian and a restaurant in English/German with different models and voices, purely through configuration.
 
 ### 3. `backend_spring_kafka` — Business Services (Auth, Subscriptions, Notifications)
 
