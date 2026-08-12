@@ -13,9 +13,9 @@ if (-not (Test-Path $destCharts)) {
 Write-Host "Copying chatbot services..."
 Copy-Item -Path "$sourceCharts/chatbot-services" -Destination "$destCharts/chatbot" -Recurse -Force
 
-# Copy omero-api
-Write-Host "Copying omero-api..."
-Copy-Item -Path "$sourceCharts/omero-api" -Destination "$destCharts/omero-api" -Recurse -Force
+# Copy chatbot-api
+Write-Host "Copying chatbot-api..."
+Copy-Item -Path "$sourceCharts/chatbot-api" -Destination "$destCharts/chatbot-api" -Recurse -Force
 
 # Move existing k3s charts to new location
 Write-Host "Moving k3s charts..."
