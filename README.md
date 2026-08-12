@@ -1,7 +1,7 @@
 # Chatbot Infrastructure Architecture
 
 ## Author
-Moonwald
+Aldo Grandoni
 
 ## Overview
 
