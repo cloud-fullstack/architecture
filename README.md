@@ -50,7 +50,7 @@ graph TB
     MKT[moonwald-s-sonic-oasis<br/>React SSR marketing site<br/><i>independent, not in the request path</i>]
 ```
 
-**Language Engine detail (`backend_llm`):**
+**Language Engine detail (`backend_llm`) — Part 1: sector routing:**
 
 ```mermaid
 graph TB
@@ -71,8 +71,13 @@ graph TB
     H6 --> MPB
 
     MPB[MultilingualPromptBuilder<br/>IT / EN / ES / FR / DE]
-    MPB --> LLMR
+    MPB --> ROUTERS[LLM / STT / TTS Routers<br/><i>see part 2</i>]
+```
 
+**Language Engine detail (`backend_llm`) — Part 2: pluggable provider routing:**
+
+```mermaid
+graph TB
     LLMR[LLM Router<br/><i>pluggable via providers.properties</i>]
     LLMR --> LLMP1[Together AI<br/>primary — e.g. Gemma]
     LLMR --> LLMP2[Qwen self-hosted<br/>fallback — swap in Llama / GPT-compatible]
