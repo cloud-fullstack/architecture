@@ -16,7 +16,7 @@ Aldo Grandoni
 
 ## Overview
 
-This document describes the architecture of a conversational chatbot platform: a multi-tenant system that provides virtual assistants (voice + text) embeddable into third-party websites. Business owners (doctors, labs, lawyers, BnB owners, vehicle-rental agencies, restaurants, e-commerce shops) subscribe to the platform; their end customers talk to the assistant and book appointments, rooms or vehicles, receiving confirmation and reminder emails.
+This document describes the architecture of **Telemaco**, a conversational chatbot platform: a multi-tenant system that provides virtual assistants (voice + text) embeddable into third-party websites. Business owners (doctors, labs, lawyers, BnB owners, vehicle-rental agencies, restaurants, e-commerce shops) subscribe to the platform; their end customers talk to the assistant and book appointments, rooms or vehicles, receiving confirmation and reminder emails.
 
 The platform is backed by a language-processing engine (LLM/STT/TTS), a deterministic booking engine, authentication, subscription and payment management, transactional email, and dataset-generation tooling for model fine-tuning.
 
@@ -223,7 +223,7 @@ Models are swapped through configuration: adding an LLM means adding a provider 
 - **Tenants and verticals**: tenant status `demo` → `trial` → `active` → `suspended`; business verticals; resellers. A demo tenant is converted at registration and becomes `active` **only when the payment webhook arrives**; a plan sent by the browser is ignored.
 - **Plans**: `demo`, `trial`, `bronze`, `silver`, `gold`, `platinum` (monthly/annual), stored in a table, deciding voice availability, message quotas and which providers are used.
 - **Payments**: provider behind a `PaymentProvider` interface (create checkout, parse webhook → common payment event):
-  - a **merchant-of-record** provider for new subscribers, so EU VAT is collected and remitted by the provider; hosted checkout only, no card data on the platform;
+  - a **merchant-of-record** provider for new subscribers in every EU country: the provider is the legal seller, collects and remits VAT per country and issues the invoice to each subscriber; the checkout collects the business VAT number so reverse charge applies to EU businesses; hosted checkout only, no card data on the platform;
   - the previous provider kept for existing subscribers until migrated; each subscription records which provider bills it, and the default for new signups is a DB setting;
   - webhook: verify signature → idempotency check → write payment **and** outbox event in the same transaction; a successful payment activates or renews, a failed payment or cancellation suspends;
   - reseller commissions and payouts are derived from payments and handled internally.
@@ -295,7 +295,7 @@ Frontend Nginx Deployment, gateway Deployment, Traefik Ingresses for the site, `
 ## Open Items
 
 - Move payments, invoices and commissions from `backend_llm` to the Spring service.
-- Confirm invoicing rules with a merchant-of-record provider (Italian e-invoicing).
+- Confirm EU-wide invoicing with the merchant-of-record provider: subscribers are businesses in all EU countries, so check that invoices carry the customer's VAT number and the reverse-charge mention where it applies, that local VAT is applied to non-business customers, and that national e-invoicing mandates (structured invoices sent through a government platform, already required in some countries and being extended EU-wide) are covered by the provider or need a separate integration.
 - Introduce the message queue and an email queue (retry with backoff, dead-letter queue) before email volumes exceed provider limits.
 - Run the booking engine as its own Deployment.
 - Add the overlapping-booking DB constraint for rooms and vehicles.
