@@ -1,9 +1,5 @@
 # Chatbot Infrastructure Architecture
 
-## Author
-Aldo Grandoni
-
-> **Live demo: [telemaco.app](https://telemaco.app)**
 >
 > The demo is a **working test environment under continuous development**, not a finished product. It runs the same code described in this document and is updated frequently as new sectors, booking flows and features are added. Expect:
 >
@@ -23,6 +19,7 @@ The production repositories are private. Three public repositories contain **rew
 | [telemaco-billing-springboot] https://github.com/cloud-fullstack/telemaco-billing-springboot | Spring Boot 3 / Java 21: payment provider port, idempotent webhook, payment + plan activation + outbox in one transaction, outbox relay with `SKIP LOCKED`, Hibernate `@TenantId` isolation, Flyway, unit tests |
 | [telemaco-operator-panel-react] https://github.com/cloud-fullstack/telemaco-operator-panel-react | React 18 / TypeScript (strict): fleet cards with edit modal, per-item REST API, availability calendar with debounced save, accessibility |
 | [telemaco-platform-infra] https://github.com/cloud-fullstack/telemaco-platform-infra | Helm chart (stateless API, Redis with separate selectors, reminder CronJob, NetworkPolicies), Terraform private AKS module, Azure DevOps plan → approval → apply pipeline |
+# Chatbot Infrastructure Architecture
 
 ## Overview
 
@@ -45,7 +42,8 @@ It is made of seven private repositories deployed on a **k3s** cluster with Helm
 | Resellers | Not described | **Reseller programme**: approval, referral codes, per-payment commissions with holding period, clawbacks, monthly payouts |
 | Tenant isolation | `tenant_id` columns | **Two barriers**: ORM-level filter (`@TenantId`) plus database Row-Level Security (planned) |
 | LLM usage | Single provider | **Routing by sector and action**, fallback chain, circuit breakers, data minimization towards model providers |
-| Messaging | Event broker with dedicated topics | Broker removed for now. **Transactional outbox** + relay; a message queue is planned when consumers grow |
+| Messaging | Kafka with dedicated topics, published directly from the code | **Transactional outbox** in PostgreSQL + poller (`FOR UPDATE SKIP LOCKED`) publishing to **Redis Streams**; Python consumers in consumer groups with idempotent handlers. Kafka removed: Redis was already in the stack |
+| Architecture | Services split by technology | **Two DDD bounded contexts** (Account & Billing, Conversation & Booking) with **ports and adapters** for payment, event and AI providers; versioned REST APIs (`/api/v1`) |
 | Payments | Not described | **Merchant-of-record provider** behind a `PaymentProvider` interface; the previous provider is kept only for existing subscribers |
 | Plans | free / basic / premium / professional / enterprise | **demo → trial → bronze / silver / gold / platinum**, stored in DB, activated only by the payment webhook |
 | Sectors | Medical, Lab, BnB, Lawyer, E-commerce, Restaurant | + **Vehicle rental (cars and vans)**; BnB rebuilt around rooms, capacity and seasonal rates |
@@ -94,9 +92,9 @@ graph TB
 
     PG[(PostgreSQL<br/>tenants, bookings, payments,<br/>commissions, outbox_events)]
     PG --> RELAY[Outbox relay]
-    RELAY -.->|planned| MQ[[Message queue<br/>email / reminders / invoices / plan activation]]
-    RELAY --> MAIL
-    RELAY -->|plan events| REDIS
+    RELAY -->|XADD| STREAMS[[Redis Streams<br/>tenant.paid, trial.week, feature,<br/>deactivated, commissions]]
+    STREAMS -->|consumer group| ENGINE
+    STREAMS -->|consumer group| MAIL
 
     MAIL[Mailer<br/>confirmations, reminders] --> SMTP[Email provider]
     CRON[CronJob every 10 min<br/>reminder dispatch] --> BOOK
@@ -259,7 +257,7 @@ Models are swapped through configuration: adding an LLM means adding a provider 
 
 ### 3. `backend_spring_kafka` — Account & Billing Services
 
-**Spring Boot** services for everything that is not AI. The repository name is historical: the event broker has been removed for now (no consumers yet, extra operational cost).
+**Spring Boot** services for everything that is not AI. The repository name is historical: Kafka has been replaced by Redis Streams fed by a transactional outbox (see below).
 
 - **Auth**: authentication and JWT. The JWT carries `tenant_id`. The **plan is read from the database**, never from the token, so a payment or suspension takes effect immediately.
 - **Tenants and verticals**: tenant status `demo` → `trial` → `active` → `suspended`; business verticals. A demo tenant is converted at registration and becomes `active` **only when the payment webhook arrives**; a plan sent by the browser is ignored.
@@ -271,9 +269,36 @@ Models are swapped through configuration: adding an LLM means adding a provider 
   - webhook: verify signature → idempotency check → write payment **and** outbox event in the same transaction; a successful payment activates or renews, a failed payment or cancellation suspends.
 - **Resellers**: see [Reseller programme](#reseller-programme).
 
-**Events — transactional outbox.** Every business event (user registered, subscription activated, payment failed, subscription suspended, plan changed, booking confirmed, commission created) is written to `outbox_events` in the same transaction as the state change. A relay reads unpublished rows and delivers them; delivery is at-least-once, so consumers are idempotent. Today the relay is in-process; when consumers multiply it will publish to a replicated **message queue** with dedicated queues for email, reminders, invoices and plan activation, and a dead-letter queue. Switching broker only touches the relay.
+**Events — transactional outbox + Redis Streams.** Every business event (tenant paid, trial week passed, feature toggled, tenant deactivated, plan changed, commission created) is written to `outbox_events` **in the same PostgreSQL transaction** as the state change. A separate poller locks unpublished rows with `FOR UPDATE SKIP LOCKED` (so several replicas never take the same rows), publishes them to Redis Streams with `XADD` and marks them as published.
+
+- **Streams**: `tenant:paid`, `tenant:trial.week`, `tenant:feature` (for example iCal sync), `tenant:deactivated`, `commissions`. Each message carries the outbox event id.
+- **Consumers**: the Python service reads through a consumer group (`XREADGROUP`) and acknowledges with `XACK`; messages left pending by a crashed consumer are reclaimed with `XAUTOCLAIM`.
+- **Guarantees**: delivery is **at-least-once**, even if Redis is down or crashes, because PostgreSQL remains the source of truth and unpublished rows are retried. Handlers are idempotent (upserts and state transitions), so a duplicate event has no effect.
+- **Why Redis Streams**: Redis was already part of the platform, so no separate broker is needed. The publisher is a port (`EventPublisher`): moving to RabbitMQ or Kafka when consumers or volumes grow only changes the adapter.
 
 **Ownership split (target).** Python owns conversation, models and the booking engine; Java owns tenants, verticals, resellers, subscriptions, checkout and webhook, payments, invoices and commissions, so payment and plan activation share one transaction. Until the migration is complete, payment tables are written by `backend_llm`.
+
+**Domain-Driven Design.** The platform has two bounded contexts with their own language and data:
+
+- *Account & Billing* (Spring Boot): Tenant, Plan, Subscription, Payment, Commission. The `Tenant` aggregate controls its lifecycle (`demo` → `trial` → `active` → `suspended`) through domain methods such as `activate` and `suspend`.
+- *Conversation & Booking* (Python): sessions, sector handlers, booking engine.
+
+Billing is upstream and publishes domain events; Conversation is downstream and keeps a local read model of each tenant's plan in Redis. Payments and subscriptions were extracted from the original Python backend into the Spring services. The business sectors are configuration of one domain, not separate services.
+
+**Hexagonal architecture (ports and adapters).**
+
+| Side | Element | Implementation |
+|---|---|---|
+| Inbound adapters | REST controllers, payment webhook | Spring MVC |
+| Outbound port | `PaymentProvider` | one adapter per payment provider, translating its webhooks into a common `PaymentEvent` (anti-corruption layer) |
+| Outbound port | `EventPublisher` | Redis Streams adapter used by the outbox poller |
+| Outbound port | repositories | Spring Data JPA |
+
+Adding a payment provider, or changing broker, means adding an adapter: the domain and its tests do not change. AI providers follow the same idea through `ProviderConfigManager`.
+
+**API design and versioning.** REST APIs are documented with OpenAPI/Swagger and versioned in the URI (`/api/v1/...`). Within a version only additive changes are allowed (new optional fields and endpoints, nothing removed or renamed), clients ignore unknown fields, and breaking changes go to a new major version. Resources are updated one at a time (POST / PATCH / DELETE per item) to prevent lost updates. The public widget contract (script attributes, `postMessage` events, JavaScript API) is kept stable, so customer websites never need to reinstall.
+
+**Service discovery and configuration.** Services run on Kubernetes and rely on its native features instead of Spring Cloud: Kubernetes Services and DNS for discovery, ConfigMaps and Secrets for configuration, and timeouts, retries and circuit breakers in code for resilience.
 
 ### 4. `spring-client-chatbot` — Python Client for Spring Services
 
@@ -292,7 +317,7 @@ Standalone internal tool (not exposed in production) that builds single-turn, mu
 - **CronJob** for reminders (every 10 min, no concurrent runs).
 - **NetworkPolicy**, optional sidecars, feature flags in `values.yaml`.
 
-A simplified, public version of this chart is in [telemaco-platform-infra](https://github.com/<github-user>/telemaco-platform-infra).
+A simplified, public version of this chart is in [telemaco-platform-infra](https://github.com/telemaco/telemaco-platform-infra).
 
 ### 7. `k3s_telemaco` — Frontend and Public Gateway Helm Chart
 
@@ -331,7 +356,7 @@ Agencies and consultants can resell subscriptions and earn a commission on what 
 All tenants share one PostgreSQL database. Isolation is enforced in layers, so a single bug does not expose another tenant's data:
 
 1. **Tenant from the token, never from the request**: the tenant comes from the JWT; webhooks and background jobs take it from verified data (payment metadata, outbox rows) and set it for the duration of the operation only. If no tenant is set, the request fails.
-2. **ORM-level filter**: every tenant-owned entity carries a `tenant_id` annotated with Hibernate `@TenantId`, which adds the tenant filter to every query and fills the column on insert. Public sample: [telemaco-billing-springboot](https://github.com/<github-user>/telemaco-billing-springboot).
+2. **ORM-level filter**: every tenant-owned entity carries a `tenant_id` annotated with Hibernate `@TenantId`, which adds the tenant filter to every query and fills the column on insert. Public sample: [telemaco-billing-springboot](https://github.com/telemaco/telemaco-billing-springboot).
 3. **Database Row-Level Security** (planned): a PostgreSQL policy on the same column also protects native queries and hand-written SQL.
 4. **Sensitive sectors flagged**: medical and legal verticals are marked in `business_verticals` and get stricter logging and model routing.
 5. **Network isolation**: Kubernetes NetworkPolicies limit which pods can reach the API, Redis and the database.
@@ -354,7 +379,7 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 2. The owner copies or downloads the install script and pastes it into the website: the assistant works immediately with trial limits.
 3. The owner picks a plan → hosted checkout of the payment provider.
 4. Payment webhook → idempotency check → payment + outbox event in one transaction → plan activated, tenant `active`.
-5. The relay delivers the event: the engine's plan cache is updated (the same script now has the plan's features), welcome email, reseller commission if the tenant was referred, invoices.
+5. The outbox poller publishes the event to Redis Streams; the engine's consumer group updates the plan cache (the same script now has the plan's features), welcome email, reseller commission if the tenant was referred, invoices.
 
 ## Security and Privacy
 
@@ -370,7 +395,7 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 - **Compliance documents**: data processing agreements with every sub-processor, and a data protection impact assessment for the medical sector.
 - **Email**: consent before storing addresses, explicit-click unsubscribe, SPF/DKIM/DMARC.
 - **Secrets**: Kubernetes Secrets, never hardcoded. **TLS** via cert-manager.
-- **Resilience**: fallback chains and circuit breakers for LLM, STT and TTS; the outbox guarantees no event is lost if a consumer is down; the plan cache keeps the assistant working if billing is briefly down.
+- **Resilience**: fallback chains and circuit breakers for LLM, STT and TTS; the outbox guarantees no event is lost if Redis or a consumer is down; the plan cache keeps the assistant working if billing is briefly down.
 
 ## Deployment
 
@@ -387,7 +412,9 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 - Enable PostgreSQL Row-Level Security on tenant-owned tables.
 - Build the AI gateway (personal-data redaction, routing by sector, audit log without content) and the self-hosted model for medical tenants.
 - Choose the automated payout channel for resellers (SEPA batch today; provider payouts if available for the company's country).
-- Introduce the message queue and an email queue (retry with backoff, dead-letter queue) before email volumes exceed provider limits.
+- Add a dead-letter stream and retry with backoff for events that keep failing, and monitor pending messages per consumer group.
+- Size stream trimming (`MAXLEN`) above the longest expected consumer downtime, so unread events are never trimmed.
+- Re-evaluate RabbitMQ or Kafka when the number of consumers or event volumes grows.
 - Run the booking engine as its own Deployment.
 - Add the overlapping-booking DB constraint for rooms and vehicles.
 - Align BnB availability calendar with configured rooms, so price and availability refer to the same room.
