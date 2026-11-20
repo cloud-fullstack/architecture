@@ -20,9 +20,9 @@ The production repositories are private. Three public repositories contain **rew
 
 | Repository | What it shows |
 |---|---|
-| [telemaco-billing-springboot](https://github.com/telemaco/telemaco-billing-springboot) | Spring Boot 3 / Java 21: payment provider port, idempotent webhook, payment + plan activation + outbox in one transaction, outbox relay with `SKIP LOCKED`, Hibernate `@TenantId` isolation, Flyway, unit tests |
-| [telemaco-operator-panel-react](https://github.com/telemaco/telemaco-operator-panel-react) | React 18 / TypeScript (strict): fleet cards with edit modal, per-item REST API, availability calendar with debounced save, accessibility |
-| [telemaco-platform-infra](https://github.com/telemaco/telemaco-platform-infra) | Helm chart (stateless API, Redis with separate selectors, reminder CronJob, NetworkPolicies), Terraform private AKS module, Azure DevOps plan → approval → apply pipeline |
+| [telemaco-billing-springboot](https://github.com/cloud-fullstack/telemaco-billing-springboot) | Spring Boot 3 / Java 21: payment provider port, idempotent webhook, payment + plan activation + outbox in one transaction, outbox relay with `SKIP LOCKED`, Hibernate `@TenantId` isolation, Flyway, unit tests |
+| [telemaco-operator-panel-react](https://github.com/cloud-fullstack/telemaco-operator-panel-react) | React 18 / TypeScript (strict): fleet cards with edit modal, per-item REST API, availability calendar with debounced save, accessibility |
+| [telemaco-platform-infra](https://github.com/cloud-fullstack/telemaco-platform-infra) | Helm chart (stateless API, Redis with separate selectors, reminder CronJob, NetworkPolicies), Terraform private AKS module, Azure DevOps plan → approval → apply pipeline |
 
 ## Overview
 
