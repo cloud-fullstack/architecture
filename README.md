@@ -1,13 +1,13 @@
+
 # Chatbot Infrastructure Architecture
 
-## Author
-Aldo Grandoni
+**Live demo**: [telemaco.app](https://telemaco.app)  
+**Author**: Aldo Grandoni
 
-> **Live demo: [telemaco.app](https://telemaco.app)**
 >
 > The demo is a **working test environment under continuous development**, not a finished product. It runs the same code described in this document and is updated frequently as new sectors, booking flows and features are added. Expect:
 >
-> - **sample businesses and data** (fictional doctors, BnB rooms, rental fleet), reset periodically;
+> - **sample businesses and data** (fictional doctors, BnB rooms, rental fleet, e-commerce catalogue), reset periodically;
 > - **simulated bookings**: nothing is actually booked, and no real payment is taken;
 > - **features at different stages**: some are complete, others are being refined, and behaviour or layout may change between visits;
 > - **occasional downtime** during deployments.
@@ -20,13 +20,13 @@ The production repositories are private. Three public repositories contain **rew
 
 | Repository | What it shows |
 |---|---|
-| [telemaco-billing-springboot] https://github.com/cloud-fullstack/telemaco-billing-springboot | Spring Boot 3 / Java 21: payment provider port, idempotent webhook, payment + plan activation + outbox in one transaction, outbox relay with `SKIP LOCKED`, Hibernate `@TenantId` isolation, Flyway, unit tests |
-| [telemaco-operator-panel-react] https://github.com/cloud-fullstack/telemaco-operator-panel-react | React 18 / TypeScript (strict): fleet cards with edit modal, per-item REST API, availability calendar with debounced save, accessibility |
-| [telemaco-platform-infra] https://github.com/cloud-fullstack/telemaco-platform-infra | Helm chart (stateless API, Redis with separate selectors, reminder CronJob, NetworkPolicies), Terraform private AKS module, Azure DevOps plan → approval → apply pipeline |
+| [telemaco-billing-springboot](https://github.com/telemaco/telemaco-billing-springboot) | Spring Boot 3 / Java 21: payment provider port, idempotent webhook, payment + plan activation + outbox in one transaction, outbox relay with `SKIP LOCKED`, Hibernate `@TenantId` isolation, Flyway, unit tests |
+| [telemaco-operator-panel-react](https://github.com/telemaco/telemaco-operator-panel-react) | React 18 / TypeScript (strict): fleet cards with edit modal, per-item REST API, availability calendar with debounced save, accessibility |
+| [telemaco-platform-infra](https://github.com/telemaco/telemaco-platform-infra) | Helm chart (stateless API, Redis with separate selectors, reminder CronJob, NetworkPolicies), Terraform private AKS module, Azure DevOps plan → approval → apply pipeline |
 
 ## Overview
 
-**Telemaco** is a multi-tenant conversational AI platform: virtual assistants (voice and text) that small businesses embed into their own websites with a single line of HTML. Business owners (doctors, labs, lawyers, BnB owners, car and van rental agencies, restaurants, e-commerce shops) subscribe to the platform; their customers talk to the assistant to get answers and book appointments, rooms or vehicles, then receive confirmation and reminder emails.
+**Telemaco** is a multi-tenant conversational AI platform: virtual assistants (voice and text) that small businesses embed into their own websites with a single line of HTML. Business owners (doctors, labs, lawyers, BnB owners, car and van rental agencies, restaurants, e-commerce shops, real-estate agencies) subscribe to the platform; their customers talk to the assistant to get answers and book appointments, rooms or vehicles, then receive confirmation and reminder emails.
 
 The platform combines:
 
@@ -45,12 +45,14 @@ It is made of seven private repositories deployed on a **k3s** cluster with Helm
 | Resellers | Not described | **Reseller programme**: approval, referral codes, per-payment commissions with holding period, clawbacks, monthly payouts |
 | Tenant isolation | `tenant_id` columns | **Two barriers**: ORM-level filter (`@TenantId`) plus database Row-Level Security (planned) |
 | LLM usage | Single provider | **Routing by sector and action**, fallback chain, circuit breakers, data minimization towards model providers |
-| Messaging | Event broker with dedicated topics | Broker removed for now. **Transactional outbox** + relay; a message queue is planned when consumers grow |
+| Messaging | Kafka with dedicated topics, published directly from the code | **Transactional outbox** in PostgreSQL + poller (`FOR UPDATE SKIP LOCKED`) publishing to **Redis Streams**; Python consumers in consumer groups with idempotent handlers. Kafka removed: Redis was already in the stack |
+| Architecture | Services split by technology | **Two DDD bounded contexts** (Account & Billing, Conversation & Booking) with **ports and adapters** for payment, event and AI providers; versioned REST APIs (`/api/v1`) |
 | Payments | Not described | **Merchant-of-record provider** behind a `PaymentProvider` interface; the previous provider is kept only for existing subscribers |
 | Plans | free / basic / premium / professional / enterprise | **demo → trial → bronze / silver / gold / platinum**, stored in DB, activated only by the payment webhook |
-| Sectors | Medical, Lab, BnB, Lawyer, E-commerce, Restaurant | + **Vehicle rental (cars and vans)**; BnB rebuilt around rooms, capacity and seasonal rates |
+| Sectors | Medical, Lab, BnB, Lawyer, E-commerce, Restaurant, Vehicle rental | + **Real-estate agency** (`calipso`): listing ingestion with SSE progress, visit requests; E-commerce rebuilt with **scraping pipeline** (SSE progress, vector search intent map) |
 | Conversation state | Files on the pod | **Redis**, so backend pods are stateless |
 | Notifications | Notification service consuming broker events | **Mailer** for booking confirmations, **reminder CronJob**, GDPR-safe unsubscribe |
+| Booking confirmation | Model could claim confirmation prematurely | **Explicit-confirmation gate**: booking created only on verified slot + unambiguous yes; hesitant or repeated-question loops corrected at prompt level |
 
 ## System Architecture
 
@@ -94,9 +96,9 @@ graph TB
 
     PG[(PostgreSQL<br/>tenants, bookings, payments,<br/>commissions, outbox_events)]
     PG --> RELAY[Outbox relay]
-    RELAY -.->|planned| MQ[[Message queue<br/>email / reminders / invoices / plan activation]]
-    RELAY --> MAIL
-    RELAY -->|plan events| REDIS
+    RELAY -->|XADD| STREAMS[[Redis Streams<br/>tenant.paid, trial.week, feature,<br/>deactivated, commissions]]
+    STREAMS -->|consumer group| ENGINE
+    STREAMS -->|consumer group| MAIL
 
     MAIL[Mailer<br/>confirmations, reminders] --> SMTP[Email provider]
     CRON[CronJob every 10 min<br/>reminder dispatch] --> BOOK
@@ -114,9 +116,10 @@ graph TB
     HF --> H2[Laboratory]
     HF --> H3[BnB<br/>rooms + quotes]
     HF --> H4[Lawyer<br/>RAG + LLM]
-    HF --> H5[E-commerce<br/>+ memory]
+    HF --> H5[E-commerce<br/>scraping + vector search]
     HF --> H6[Restaurant<br/>menu]
     HF --> H7[Vehicle rental<br/>cars & vans]
+    HF --> H8[Real-estate<br/>listings + visit requests]
 
     H1 --> MPB
     H2 --> MPB
@@ -125,6 +128,7 @@ graph TB
     H5 --> MPB
     H6 --> MPB
     H7 --> MPB
+    H8 --> MPB
 
     MPB[MultilingualPromptBuilder<br/>IT / EN / ES / FR / DE]
     MPB --> TOOLS[Booking tools<br/>check availability, confirm booking]
@@ -163,14 +167,16 @@ Public entry layer of the platform. A **Node.js/Fastify** service plus the React
   ```
 
   `widget.js` is a small loader that adds a chat button and opens the assistant in an **iframe** (`/embed`). The page inside the iframe verifies the key, loads the tenant's sector, name and plan, and renders the same React chat component used on the demo site. Loader and iframe talk through `postMessage`, accepted only from the platform origin, and the loader exposes a minimal API (`window.Telemaco.open()` / `close()`). Customers never receive application code, only the script line, so fixes reach every website without reinstalling.
-- **Chat component**: one shared component for the demo site and for customer websites, configured through props (demo or embedded, tenant key, preset sector). Text and voice input (browser speech recognition, with recording sent to backend STT as fallback), male/female voice selector, hands-free mode with end-of-turn detection. Microphone and voice are hidden when the tenant's plan does not include voice.
+- **Chat component**: one shared component for the demo site and for customer websites, configured through props (demo or embedded, tenant key, preset sector). Text and voice input (browser speech recognition, with recording sent to backend STT as fallback), male/female voice selector, hands-free mode with end-of-turn detection. Microphone and voice are hidden when the tenant's plan does not include voice. During e-commerce catalogue indexing, the chat shows a progress message; it unlocks fully once scraping reaches 100%.
 - **Operator panel** (React): per-sector back office for business owners:
   - *Medical / lab / lawyer*: calendar where every slot starts **busy (orange)** and the professional marks free slots (**green**).
   - *BnB*: rooms and seasonal rates editor, with import from the property's website or a PDF price list and a "try a quote" box.
   - *Vehicle rental*: Agency → Rental conditions → Opening days calendar → Fleet → Chatbot bookings. Fleet shown as read-only cards with image, edited through a modal.
-  - *All sectors*: **"The chatbot on your website"** section, under the calendar and at the bottom of the home page (see [Onboarding](#onboarding-install-script-and-widget-key)).
+  - *E-commerce*: catalogue scraping panel with real-time SSE progress bar, facet preview, and "try the assistant" box once indexing is complete.
+  - *Real-estate*: listing ingestion panel (SSE progress), visit-request inbox.
+  - *All sectors*: **"The chatbot on your website"** section, under the calendar and at the bottom of the home page.
 - **Reseller dashboard**: referral link and codes, referred customers, commissions by status, next payout.
-- **REST proxy**: routes chat, TTS, widget verification, reminders, demo, tenant, billing and reseller APIs, injecting the service JWT. Tenant APIs (`/api/menu/*`, `/api/bnb/*`, `/api/rental/*`) go through a single generic handler that forwards method, path, body (JSON or PDF upload), cookie and authorization, with a longer timeout for LLM-based imports.
+- **REST proxy**: routes chat, TTS, widget verification, reminders, demo, tenant, billing and reseller APIs, injecting the service JWT. Tenant APIs (`/api/menu/*`, `/api/bnb/*`, `/api/rental/*`, `/api/ecommerce/*`, `/api/realestate/*`) go through a single generic handler that forwards method, path, body (JSON or PDF upload), cookie and authorization, with a longer timeout for LLM-based imports.
 - **WebSocket proxy** (`/ws/chat`): validates `widget_key` and `Origin` before the upgrade, applies per-IP rate limiting, then forwards frames to the `backend_llm` WebSocket.
 - **Security**: valid `widget_key`s, allowed origins per tenant, per-IP rate limiting.
 
@@ -211,6 +217,7 @@ Any replica can serve the next turn, which is the prerequisite for horizontal sc
 All availability and booking decisions are code, not LLM output:
 
 - **Confirmation gate**: a booking is created only if the slot was verified in a previous turn, the user gave an explicit yes (hesitant answers are rejected), and the requested slot matches one of the offered options. If the model claims a confirmation that did not happen, the text is corrected. Covered by unit tests.
+- **Explicit-confirmation recognition**: the prompt rules (`conversation_rules`) instruct the model to treat repeated confirmations ("confermo", "sì confermo", "va bene") as a definitive yes and not re-ask for details already given in the same session. This prevents the loop where the assistant re-requests day and time after the customer has already stated them.
 - **Database is the final guard**: a constraint prevents overlapping bookings on the same resource (doctor slot, room, vehicle).
 - Exposed as APIs used by chatbot tools, widget and operator panel. Planned: run it as a **separate Deployment** from the same codebase, so the calendar keeps working if LLM pods are slow.
 - The end customer's email is **never asked in chat**: after confirmation the widget shows an email box with privacy consent.
@@ -223,9 +230,10 @@ A `HandlerFactory` routes each request to a handler by `business_type`:
 - **Laboratory** — lab analysis booking.
 - **BnB** — rooms, capacity, seasonal pricing, booking (see below).
 - **Lawyer** — legal Q&A via RAG over uploaded documents, LLM fallback.
-- **E-commerce** — products, order status, session memory.
+- **E-commerce** — catalogue scraping, vector-search intent map, order status, session memory (see below).
 - **Restaurant** — menu (importable from URL or PDF), orders, reservations.
 - **Vehicle rental** — cars and vans: fleet, rental conditions, pickup/return dates (see below).
+- **Real-estate** — listing ingestion, property search, visit-request scheduling (see below).
 - **RAG / Document Q&A** — reused by other handlers.
 
 Each handler builds its prompt through `MultilingualPromptBuilder` (IT/EN/ES/FR/DE). New sectors are added by implementing a handler and registering it in the factory; sectors are configuration (`business_verticals`), not separate services.
@@ -245,6 +253,21 @@ Each handler builds its prompt through `MultilingualPromptBuilder` (IT/EN/ES/FR/
 - **Rules**: pickups only on the hour or half hour; opening hours validated server-side; the operator calendar opens on the current month and marks days that already have pickups.
 - **Images**: generic category images (city car, sedan, wagon, SUV, 7-seat MPV, small/medium/large van, 9-seat minibus) with license credits, or the agency's own photos uploaded and resized server-side.
 
+#### E-commerce sector
+
+- **Catalogue scraping** (`ecommerce_scrape.py`): detects platform (Shopify, WooCommerce, custom), scrapes categories and products with pagination and retry, streams real-time progress to the operator panel via **SSE**. Scraped products are stored in the `circe` database.
+- **Intent map** (`sector_intent_map/ecommerce.json`): entity recognizers use **vector search** (`top_k: 5`, `min_score: 0.72`) instead of fixed patterns, because the entity is a free-form product query. Price constraints and attributes (size, colour, dietary) are matched by pattern.
+- **Intents**: `search_product`, `filter_by_price`, `filter_by_attribute`, `order_status`, `recommend`. Each intent follows a `steps` contract: missing entities trigger a targeted clarification; found entities produce a structured tool call; grounded results are injected before the LLM reply.
+- **Session memory**: last search, filters and viewed products persist across turns.
+- During indexing the chat widget shows *"Indexing catalogue…"*; once scraping reaches 100% it switches to the full assistant mode and reports the product count.
+
+#### Real-estate sector (`calipso`)
+
+- **Listing ingestion** (`realestate_ingestion.py`): detects listing source (agency website, property-portal feed, CSV), scrapes individual listing details with pagination, streams progress via SSE. Listings are stored in the `calipso` database.
+- **Search intent** (`realestate_intent.py`): entity recognizers for property type, location, price range, surface area, number of rooms; vector search on description for open queries.
+- **Visit requests**: the assistant collects preferred date/time and contact details, writes a visit-request record (not a confirmed booking), and notifies the agent by email.
+- **Operator panel**: listing-ingestion panel with SSE progress bar; visit-request inbox with status tracking.
+
 #### Transactional email
 
 - **Mailer**: multilingual templates, standard one-click unsubscribe headers.
@@ -259,7 +282,7 @@ Models are swapped through configuration: adding an LLM means adding a provider 
 
 ### 3. `backend_spring_kafka` — Account & Billing Services
 
-**Spring Boot** services for everything that is not AI. The repository name is historical: the event broker has been removed for now (no consumers yet, extra operational cost).
+**Spring Boot** services for everything that is not AI. The repository name is historical: Kafka has been replaced by Redis Streams fed by a transactional outbox (see below).
 
 - **Auth**: authentication and JWT. The JWT carries `tenant_id`. The **plan is read from the database**, never from the token, so a payment or suspension takes effect immediately.
 - **Tenants and verticals**: tenant status `demo` → `trial` → `active` → `suspended`; business verticals. A demo tenant is converted at registration and becomes `active` **only when the payment webhook arrives**; a plan sent by the browser is ignored.
@@ -271,9 +294,36 @@ Models are swapped through configuration: adding an LLM means adding a provider 
   - webhook: verify signature → idempotency check → write payment **and** outbox event in the same transaction; a successful payment activates or renews, a failed payment or cancellation suspends.
 - **Resellers**: see [Reseller programme](#reseller-programme).
 
-**Events — transactional outbox.** Every business event (user registered, subscription activated, payment failed, subscription suspended, plan changed, booking confirmed, commission created) is written to `outbox_events` in the same transaction as the state change. A relay reads unpublished rows and delivers them; delivery is at-least-once, so consumers are idempotent. Today the relay is in-process; when consumers multiply it will publish to a replicated **message queue** with dedicated queues for email, reminders, invoices and plan activation, and a dead-letter queue. Switching broker only touches the relay.
+**Events — transactional outbox + Redis Streams.** Every business event (tenant paid, trial week passed, feature toggled, tenant deactivated, plan changed, commission created) is written to `outbox_events` **in the same PostgreSQL transaction** as the state change. A separate poller locks unpublished rows with `FOR UPDATE SKIP LOCKED` (so several replicas never take the same rows), publishes them to Redis Streams with `XADD` and marks them as published.
+
+- **Streams**: `tenant:paid`, `tenant:trial.week`, `tenant:feature` (for example iCal sync), `tenant:deactivated`, `commissions`. Each message carries the outbox event id.
+- **Consumers**: the Python service reads through a consumer group (`XREADGROUP`) and acknowledges with `XACK`; messages left pending by a crashed consumer are reclaimed with `XAUTOCLAIM`.
+- **Guarantees**: delivery is **at-least-once**, even if Redis is down or crashes, because PostgreSQL remains the source of truth and unpublished rows are retried. Handlers are idempotent (upserts and state transitions), so a duplicate event has no effect.
+- **Why Redis Streams**: Redis was already part of the platform, so no separate broker is needed. The publisher is a port (`EventPublisher`): moving to RabbitMQ or Kafka when consumers or volumes grow only changes the adapter.
 
 **Ownership split (target).** Python owns conversation, models and the booking engine; Java owns tenants, verticals, resellers, subscriptions, checkout and webhook, payments, invoices and commissions, so payment and plan activation share one transaction. Until the migration is complete, payment tables are written by `backend_llm`.
+
+**Domain-Driven Design.** The platform has two bounded contexts with their own language and data:
+
+- *Account & Billing* (Spring Boot): Tenant, Plan, Subscription, Payment, Commission. The `Tenant` aggregate controls its lifecycle (`demo` → `trial` → `active` → `suspended`) through domain methods such as `activate` and `suspend`.
+- *Conversation & Booking* (Python): sessions, sector handlers, booking engine.
+
+Billing is upstream and publishes domain events; Conversation is downstream and keeps a local read model of each tenant's plan in Redis. Payments and subscriptions were extracted from the original Python backend into the Spring services. The business sectors are configuration of one domain, not separate services.
+
+**Hexagonal architecture (ports and adapters).**
+
+| Side | Element | Implementation |
+|---|---|---|
+| Inbound adapters | REST controllers, payment webhook | Spring MVC |
+| Outbound port | `PaymentProvider` | one adapter per payment provider, translating its webhooks into a common `PaymentEvent` (anti-corruption layer) |
+| Outbound port | `EventPublisher` | Redis Streams adapter used by the outbox poller |
+| Outbound port | repositories | Spring Data JPA |
+
+Adding a payment provider, or changing broker, means adding an adapter: the domain and its tests do not change. AI providers follow the same idea through `ProviderConfigManager`.
+
+**API design and versioning.** REST APIs are documented with OpenAPI/Swagger and versioned in the URI (`/api/v1/...`). Within a version only additive changes are allowed (new optional fields and endpoints, nothing removed or renamed), clients ignore unknown fields, and breaking changes go to a new major version. Resources are updated one at a time (POST / PATCH / DELETE per item) to prevent lost updates. The public widget contract (script attributes, `postMessage` events, JavaScript API) is kept stable, so customer websites never need to reinstall.
+
+**Service discovery and configuration.** Services run on Kubernetes and rely on its native features instead of Spring Cloud: Kubernetes Services and DNS for discovery, ConfigMaps and Secrets for configuration, and timeouts, retries and circuit breakers in code for resilience.
 
 ### 4. `spring-client-chatbot` — Python Client for Spring Services
 
@@ -292,7 +342,7 @@ Standalone internal tool (not exposed in production) that builds single-turn, mu
 - **CronJob** for reminders (every 10 min, no concurrent runs).
 - **NetworkPolicy**, optional sidecars, feature flags in `values.yaml`.
 
-A simplified, public version of this chart is in [telemaco-platform-infra](https://github.com/<github-user>/telemaco-platform-infra).
+A simplified, public version of this chart is in [telemaco-platform-infra](https://github.com/telemaco/telemaco-platform-infra).
 
 ### 7. `k3s_telemaco` — Frontend and Public Gateway Helm Chart
 
@@ -300,7 +350,7 @@ Frontend Nginx Deployment, gateway Deployment, Traefik Ingresses for the site, `
 
 ## Onboarding: install script and widget key
 
-The section **"The chatbot on your website"** appears in the customer area under the calendar and at the bottom of the home page, for every sector (medical, BnB, car and van rental, e-commerce and the others).
+The section **"The chatbot on your website"** appears in the customer area under the calendar and at the bottom of the home page, for every sector (medical, BnB, car and van rental, e-commerce, real-estate and the others).
 
 | Visitor | What they see | What happens |
 |---|---|---|
@@ -331,7 +381,7 @@ Agencies and consultants can resell subscriptions and earn a commission on what 
 All tenants share one PostgreSQL database. Isolation is enforced in layers, so a single bug does not expose another tenant's data:
 
 1. **Tenant from the token, never from the request**: the tenant comes from the JWT; webhooks and background jobs take it from verified data (payment metadata, outbox rows) and set it for the duration of the operation only. If no tenant is set, the request fails.
-2. **ORM-level filter**: every tenant-owned entity carries a `tenant_id` annotated with Hibernate `@TenantId`, which adds the tenant filter to every query and fills the column on insert. Public sample: [telemaco-billing-springboot](https://github.com/<github-user>/telemaco-billing-springboot).
+2. **ORM-level filter**: every tenant-owned entity carries a `tenant_id` annotated with Hibernate `@TenantId`, which adds the tenant filter to every query and fills the column on insert. Public sample: [telemaco-billing-springboot](https://github.com/telemaco/telemaco-billing-springboot).
 3. **Database Row-Level Security** (planned): a PostgreSQL policy on the same column also protects native queries and hand-written SQL.
 4. **Sensitive sectors flagged**: medical and legal verticals are marked in `business_verticals` and get stricter logging and model routing.
 5. **Network isolation**: Kubernetes NetworkPolicies limit which pods can reach the API, Redis and the database.
@@ -344,7 +394,7 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 2. WebSocket → Traefik → gateway, which validates `widget_key`, `Origin` and rate limits.
 3. `backend_llm` loads the session, booking state and tenant plan from Redis; voice input goes through STT (primary → fallback).
 4. The sector handler builds the prompt (with rooms/fleet/slots where relevant) and calls the LLM through the router (primary → fallback).
-5. Availability comes from booking-engine tools; the confirmation gate passes, and the booking plus an outbox event are written in one transaction.
+5. Availability comes from booking-engine tools; the confirmation gate passes (explicit yes required, repeated confirmations recognised), and the booking plus an outbox event are written in one transaction.
 6. The reply is optionally synthesized (TTS primary → fallback) and streamed back; session state is saved to Redis.
 7. The customer enters the email in the consent box; the mailer sends the confirmation and the CronJob sends the reminder later.
 
@@ -354,7 +404,7 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 2. The owner copies or downloads the install script and pastes it into the website: the assistant works immediately with trial limits.
 3. The owner picks a plan → hosted checkout of the payment provider.
 4. Payment webhook → idempotency check → payment + outbox event in one transaction → plan activated, tenant `active`.
-5. The relay delivers the event: the engine's plan cache is updated (the same script now has the plan's features), welcome email, reseller commission if the tenant was referred, invoices.
+5. The outbox poller publishes the event to Redis Streams; the engine's consumer group updates the plan cache (the same script now has the plan's features), welcome email, reseller commission if the tenant was referred, invoices.
 
 ## Security and Privacy
 
@@ -370,14 +420,14 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 - **Compliance documents**: data processing agreements with every sub-processor, and a data protection impact assessment for the medical sector.
 - **Email**: consent before storing addresses, explicit-click unsubscribe, SPF/DKIM/DMARC.
 - **Secrets**: Kubernetes Secrets, never hardcoded. **TLS** via cert-manager.
-- **Resilience**: fallback chains and circuit breakers for LLM, STT and TTS; the outbox guarantees no event is lost if a consumer is down; the plan cache keeps the assistant working if billing is briefly down.
+- **Resilience**: fallback chains and circuit breakers for LLM, STT and TTS; the outbox guarantees no event is lost if Redis or a consumer is down; the plan cache keeps the assistant working if billing is briefly down.
 
 ## Deployment
 
 1. **`k3s_engine_llm`**: `helm upgrade` of the backend chart (engine, Redis, CronJob).
 2. **`k3s_telemaco`**: `helm upgrade` of the frontend + public gateway chart.
 3. **`backend_spring_kafka`**: Maven build of the Spring Boot services, deploy via their charts.
-4. **Database migrations** (outbox, payments, BnB, rental, reseller, commission and subscription tables) applied before the related code release.
+4. **Database migrations** (outbox, payments, BnB, rental, reseller, commission, subscription, e-commerce catalogue, real-estate listings tables) applied before the related code release.
 5. Content-only updates via ConfigMap; code updates require image rebuild, import into k3s, and `helm upgrade`.
 
 ## Open Items
@@ -387,10 +437,14 @@ All tenants share one PostgreSQL database. Isolation is enforced in layers, so a
 - Enable PostgreSQL Row-Level Security on tenant-owned tables.
 - Build the AI gateway (personal-data redaction, routing by sector, audit log without content) and the self-hosted model for medical tenants.
 - Choose the automated payout channel for resellers (SEPA batch today; provider payouts if available for the company's country).
-- Introduce the message queue and an email queue (retry with backoff, dead-letter queue) before email volumes exceed provider limits.
+- Add a dead-letter stream and retry with backoff for events that keep failing, and monitor pending messages per consumer group.
+- Size stream trimming (`MAXLEN`) above the longest expected consumer downtime, so unread events are never trimmed.
+- Re-evaluate RabbitMQ or Kafka when the number of consumers or event volumes grows.
 - Run the booking engine as its own Deployment.
 - Add the overlapping-booking DB constraint for rooms and vehicles.
 - Align BnB availability calendar with configured rooms, so price and availability refer to the same room.
+- Complete real-estate (`calipso`) visit-request flow: email notification to agent, status tracking in operator panel.
+- Unify e-commerce scraping base class (`scrape_base.py`) with real-estate ingestion for shared retry/progress logic.
 
 ## Repository status
 
